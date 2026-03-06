@@ -41,6 +41,11 @@ function configHeaders() {
 // ---------- Request helper ----------
 async function request(url, options = {}) {
   const headers = { ...configHeaders(), ...(options.headers || {}) };
+  // When body is FormData, browser must set Content-Type with boundary automatically.
+  // Remove any manually set Content-Type so the browser can handle it.
+  if (options.body instanceof FormData) {
+    delete headers['Content-Type'];
+  }
   const res = await fetch(`${API_BASE}${url}`, { ...options, headers });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
