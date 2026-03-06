@@ -1,5 +1,63 @@
 import { useState, useRef, useCallback } from 'react';
 
+/**
+ * Convert any audio Blob to WAV format using Web Audio API.
+ * This avoids webm parsing issues on some STT providers.
+ */
+async function convertToWav(blob) {
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const arrayBuffer = await blob.arrayBuffer();
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  audioCtx.close();
+
+  // Encode as 16-bit PCM WAV
+  const numChannels = 1;
+  const sampleRate = audioBuffer.sampleRate;
+  const rawData = audioBuffer.getChannelData(0);
+  const wavBuffer = encodeWav(rawData, sampleRate, numChannels);
+  return new Blob([wavBuffer], { type: 'audio/wav' });
+}
+
+function encodeWav(samples, sampleRate, numChannels) {
+  const bytesPerSample = 2;
+  const dataLength = samples.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(buffer);
+
+  // RIFF header
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataLength, true);
+  writeString(view, 8, 'WAVE');
+
+  // fmt chunk
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * numChannels * bytesPerSample, true);
+  view.setUint16(32, numChannels * bytesPerSample, true);
+  view.setUint16(34, bytesPerSample * 8, true);
+
+  // data chunk
+  writeString(view, 36, 'data');
+  view.setUint32(40, dataLength, true);
+
+  // PCM samples
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+  }
+  return buffer;
+}
+
+function writeString(view, offset, string) {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+}
+
 export function useAudioRecorder() {
   const [isRecording, setIsRecording] = useState(false);
   const [audioBlob, setAudioBlob] = useState(null);
@@ -25,10 +83,16 @@ export function useAudioRecorder() {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
 
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-        setAudioBlob(blob);
+      mediaRecorder.onstop = async () => {
+        const webmBlob = new Blob(chunksRef.current, { type: 'audio/webm' });
         stream.getTracks().forEach((t) => t.stop());
+        try {
+          const wavBlob = await convertToWav(webmBlob);
+          setAudioBlob(wavBlob);
+        } catch (err) {
+          console.warn('WAV conversion failed, using webm:', err);
+          setAudioBlob(webmBlob);
+        }
       };
 
       mediaRecorder.start(1000);

@@ -68,8 +68,9 @@ export const api = {
   },
 
   transcribe: (audioBlob) => {
+    const ext = audioBlob.type === 'audio/wav' ? 'wav' : 'webm';
     const form = new FormData();
-    form.append('audio', audioBlob, 'recording.webm');
+    form.append('audio', audioBlob, `recording.${ext}`);
     return request('/transcribe', { method: 'POST', body: form });
   },
 
@@ -81,8 +82,9 @@ export const api = {
     }),
 
   evaluateAudio: (audioBlob, questionId, questionText, part) => {
+    const ext = audioBlob.type === 'audio/wav' ? 'wav' : 'webm';
     const form = new FormData();
-    form.append('audio', audioBlob, 'recording.webm');
+    form.append('audio', audioBlob, `recording.${ext}`);
     form.append('question_id', questionId);
     form.append('question_text', questionText);
     form.append('part', part);
