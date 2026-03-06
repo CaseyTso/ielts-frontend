@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Mic, Square, Send, Clock, RotateCcw, Loader2 } from 'lucide-react';
-import { api } from '../api';
+import { ArrowLeft, Mic, Square, Send, Clock, RotateCcw, Loader2, AlertTriangle } from 'lucide-react';
+import { api, loadConfig } from '../api';
 import { useAudioRecorder } from '../useAudioRecorder';
 import { PartBadge, LoadingSpinner } from '../components/UIComponents';
 
@@ -217,7 +217,18 @@ export default function PracticePage() {
 
       {/* Error */}
       {error && (
-        <div className="mx-5 mb-3 bg-danger/10 text-danger text-sm p-3 rounded-xl">{error}</div>
+        <div className="mx-5 mb-3 bg-danger/10 text-danger text-sm p-3 rounded-xl flex items-start gap-2">
+          <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+          <div>
+            <p className="font-medium">Error</p>
+            <p className="text-xs mt-0.5">{error}</p>
+            {!loadConfig().apiKey && (
+              <p className="text-xs mt-1 text-text-secondary">
+                Tip: Make sure your API key is configured in Settings.
+              </p>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Transcript Display */}
