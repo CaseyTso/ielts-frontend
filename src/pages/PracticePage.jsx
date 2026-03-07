@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Mic, Square, Send, Clock, RotateCcw, Loader2, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Mic, Square, Send, Clock, RotateCcw, Loader2, AlertTriangle, ChevronRight } from 'lucide-react';
 import { api, loadConfig } from '../api';
 import { useAudioRecorder } from '../useAudioRecorder';
 import { PartBadge, LoadingSpinner } from '../components/UIComponents';
@@ -68,12 +68,30 @@ export default function PracticePage() {
   const [error, setError] = useState('');
   const { isRecording, audioBlob, duration, startRecording, stopRecording, resetRecording } = useAudioRecorder();
 
-  // Load question
+  // Follow-up question flow state
+  const [questionSequence, setQuestionSequence] = useState([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [responses, setResponses] = useState([]);
+
+  const hasFollowUps = questionSequence.length > 1;
+  const isLastQuestion = currentIndex >= questionSequence.length - 1;
+
+  // Load question and build sequence
   useEffect(() => {
     api.getQuestions().then((data) => {
       const q = data.questions.find((q) => q.id === questionId);
-      if (q) setQuestion(q);
-      else setError('Question not found');
+      if (q) {
+        setQuestion(q);
+        const seq = [q.text];
+        if (q.part !== 2 && q.follow_ups?.length > 0) {
+          seq.push(...q.follow_ups);
+        }
+        setQuestionSequence(seq);
+        setCurrentIndex(0);
+        setResponses([]);
+      } else {
+        setError('Question not found');
+      }
     }).catch(() => setError('Failed to load question'))
     .finally(() => setLoading(false));
   }, [questionId]);
@@ -95,7 +113,7 @@ export default function PracticePage() {
     setPhase('ready');
   }, [stopRecording]);
 
-  // Submit for evaluation
+  // Submit current answer
   const handleSubmit = useCallback(async () => {
     if (!audioBlob && !transcript) return;
 
@@ -103,35 +121,81 @@ export default function PracticePage() {
     setError('');
 
     try {
-      let result;
+      let currentTranscript = transcript;
+
+      // If audio was recorded, transcribe it first
       if (audioBlob) {
-        result = await api.evaluateAudio(audioBlob, question.id, question.text, question.part);
-        if (result.error) {
-          setError(result.error);
+        const transcribeResult = await api.transcribe(audioBlob);
+        if (transcribeResult.error) {
+          setError(transcribeResult.error);
           setPhase('ready');
           return;
         }
-        if (result.transcript) setTranscript(result.transcript);
+        currentTranscript = transcribeResult.transcript;
+        if (!currentTranscript) {
+          setError('Could not transcribe audio. The recording may be too short or silent.');
+          setPhase('ready');
+          return;
+        }
+      }
+
+      // Store the response
+      const newResponses = [...responses, {
+        questionText: questionSequence[currentIndex],
+        transcript: currentTranscript,
+      }];
+      setResponses(newResponses);
+
+      const nextIndex = currentIndex + 1;
+
+      if (nextIndex < questionSequence.length) {
+        // More questions: advance to next
+        setCurrentIndex(nextIndex);
+        setTranscript('');
+        resetRecording();
+        setPhase('ready');
       } else {
-        result = await api.evaluate({
+        // All done: build combined transcript and evaluate
+        const combinedTranscript = newResponses
+          .map(r => `Q: ${r.questionText}\nA: ${r.transcript}`)
+          .join('\n\n');
+
+        const result = await api.evaluate({
           question_id: question.id,
           question_text: question.text,
           part: question.part,
-          transcript: transcript,
+          transcript: combinedTranscript,
+        });
+
+        navigate('/result', {
+          state: {
+            result,
+            question,
+            responses: newResponses,
+            isFollowUpSession: questionSequence.length > 1,
+          },
         });
       }
-
-      // Navigate to result page with data
-      navigate('/result', { state: { result, question } });
     } catch (err) {
       setError(err.message || 'Evaluation failed');
       setPhase('ready');
     }
-  }, [audioBlob, transcript, question, navigate]);
+  }, [audioBlob, transcript, question, navigate, responses, questionSequence, currentIndex, resetRecording]);
 
   // Start prep timer for Part 2
   const handleStartPrep = () => setPhase('prep');
   const handlePrepFinish = () => setPhase('ready');
+
+  // Back button with confirmation if mid-sequence
+  const handleBack = () => {
+    if (responses.length > 0) {
+      if (window.confirm('You have answered some questions. Leave and lose your progress?')) {
+        navigate(-1);
+      }
+    } else {
+      navigate(-1);
+    }
+  };
 
   if (loading) return <LoadingSpinner />;
   if (error && !question) {
@@ -149,7 +213,7 @@ export default function PracticePage() {
     <div className="flex flex-col min-h-[100dvh]">
       {/* Top Bar */}
       <div className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-100">
-        <button onClick={() => navigate(-1)} className="p-1">
+        <button onClick={handleBack} className="p-1">
           <ArrowLeft size={22} className="text-text" />
         </button>
         <div className="flex-1">
@@ -162,7 +226,32 @@ export default function PracticePage() {
 
       {/* Question Display */}
       <div className="px-5 pt-6 pb-4">
-        <p className="text-lg font-semibold text-text leading-relaxed">{question.text}</p>
+        {/* Progress indicator for follow-up flow */}
+        {hasFollowUps && (
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-xs font-medium text-text-secondary">
+              Question {currentIndex + 1} of {questionSequence.length}
+            </span>
+            <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-primary rounded-full transition-all duration-300"
+                style={{ width: `${((currentIndex + 1) / questionSequence.length) * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Current question text */}
+        <p className="text-lg font-semibold text-text leading-relaxed">
+          {questionSequence[currentIndex] || question.text}
+        </p>
+
+        {/* Follow-up label */}
+        {currentIndex > 0 && (
+          <span className="inline-block mt-2 text-xs text-primary font-medium bg-primary/10 px-2 py-0.5 rounded-full">
+            Follow-up question
+          </span>
+        )}
 
         {/* Part 2: Cue Card */}
         {question.part === 2 && question.cue_card_points?.length > 0 && (
@@ -173,17 +262,20 @@ export default function PracticePage() {
             ))}
           </div>
         )}
-
-        {/* Follow-up questions */}
-        {question.follow_ups?.length > 0 && question.part !== 2 && (
-          <div className="mt-4 space-y-1.5">
-            <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider">Follow-ups</p>
-            {question.follow_ups.map((fu, i) => (
-              <p key={i} className="text-sm text-text-secondary">{fu}</p>
-            ))}
-          </div>
-        )}
       </div>
+
+      {/* Previous responses summary */}
+      {responses.length > 0 && (
+        <div className="mx-5 mb-3 space-y-2">
+          <p className="text-xs font-semibold text-text-secondary uppercase tracking-wider">Previous responses</p>
+          {responses.map((r, i) => (
+            <div key={i} className="bg-white/60 rounded-lg p-3 border border-gray-100">
+              <p className="text-xs text-text-secondary font-medium">{r.questionText}</p>
+              <p className="text-xs text-text mt-1 line-clamp-2">{r.transcript}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Prep Timer for Part 2 */}
       {question.part === 2 && phase === 'ready' && !audioBlob && (
@@ -231,7 +323,7 @@ export default function PracticePage() {
         </div>
       )}
 
-      {/* Transcript Display */}
+      {/* Transcript Display (after recording, before submit) */}
       {transcript && phase !== 'submitting' && (
         <div className="mx-5 mb-3 bg-white rounded-xl p-4 border border-gray-200 max-h-32 overflow-y-auto">
           <p className="text-xs font-semibold text-text-secondary mb-1">Your response:</p>
@@ -256,7 +348,9 @@ export default function PracticePage() {
         {phase === 'submitting' ? (
           <div className="flex flex-col items-center py-4 gap-2">
             <Loader2 size={32} className="text-primary animate-spin" />
-            <p className="text-sm text-text-secondary">Analyzing your response...</p>
+            <p className="text-sm text-text-secondary">
+              {isLastQuestion ? 'Analyzing your responses...' : 'Processing...'}
+            </p>
           </div>
         ) : isRecording ? (
           <div className="flex flex-col items-center gap-4">
@@ -282,14 +376,23 @@ export default function PracticePage() {
               </button>
             )}
 
-            {/* Submit Button */}
+            {/* Submit / Next Button */}
             {(audioBlob || transcript.trim()) && (
               <button
                 onClick={handleSubmit}
                 className="flex items-center justify-center gap-2 bg-success text-white px-6 py-3.5 rounded-xl font-semibold text-sm shadow-md active:scale-[0.98] transition-transform"
               >
-                <Send size={18} />
-                Submit
+                {isLastQuestion ? (
+                  <>
+                    <Send size={18} />
+                    Submit
+                  </>
+                ) : (
+                  <>
+                    Next
+                    <ChevronRight size={18} />
+                  </>
+                )}
               </button>
             )}
 

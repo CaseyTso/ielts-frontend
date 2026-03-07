@@ -1,5 +1,5 @@
 import { useLocation, useNavigate, Link } from 'react-router-dom';
-import { ArrowLeft, Award, BookOpen, Lightbulb, RefreshCw, ArrowRight } from 'lucide-react';
+import { ArrowLeft, Award, BookOpen, Lightbulb, RefreshCw, ArrowRight, MessageCircle } from 'lucide-react';
 import { ScoreBadge, PartBadge } from '../components/UIComponents';
 
 /* ---------- Score Radar Chart (simplified bar-based) ---------- */
@@ -39,7 +39,7 @@ function ScoreChart({ scores }) {
 export default function ResultPage() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { result, question } = location.state || {};
+  const { result, question, responses, isFollowUpSession } = location.state || {};
 
   if (!result) {
     return (
@@ -63,12 +63,18 @@ export default function ResultPage() {
         <h1 className="text-lg font-bold">Evaluation Result</h1>
       </div>
 
-      {/* Question */}
+      {/* Question & Conversation */}
       {question && (
         <div className="bg-white rounded-xl p-4 border border-gray-100">
           <div className="flex items-center gap-2 mb-1.5">
             <PartBadge part={question.part} />
             <span className="text-[11px] text-text-secondary">{question.topic}</span>
+            {isFollowUpSession && responses?.length > 0 && (
+              <span className="ml-auto text-[11px] font-medium text-primary bg-primary/10 px-2 py-0.5 rounded-full flex items-center gap-1">
+                <MessageCircle size={10} />
+                {responses.length} questions
+              </span>
+            )}
           </div>
           <p className="text-sm text-text">{question.text}</p>
         </div>
@@ -99,8 +105,28 @@ export default function ResultPage() {
         <ScoreChart scores={scores} />
       </div>
 
-      {/* Transcript */}
-      {result.transcript && (
+      {/* Conversation Q&A Pairs (follow-up sessions) */}
+      {isFollowUpSession && responses?.length > 0 && (
+        <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+          <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+            <BookOpen size={16} className="text-primary" />
+            Your Conversation
+          </h2>
+          <div className="space-y-3">
+            {responses.map((r, i) => (
+              <div key={i} className="bg-surface rounded-lg p-3">
+                <p className="text-xs font-medium text-primary mb-1">
+                  {i === 0 ? 'Q' : `Follow-up ${i}`}: {r.questionText}
+                </p>
+                <p className="text-sm text-text-secondary leading-relaxed">{r.transcript}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Single Transcript (non-follow-up sessions) */}
+      {!isFollowUpSession && result.transcript && (
         <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
           <h2 className="text-sm font-semibold mb-2 flex items-center gap-2">
             <BookOpen size={16} className="text-primary" />
@@ -167,8 +193,27 @@ export default function ResultPage() {
       {/* Sample Answer */}
       {result.sample_answer && (
         <div className="bg-primary/5 rounded-xl p-4 border border-primary/20">
-          <h2 className="text-sm font-semibold text-primary mb-2">Band 8-9 Sample Answer</h2>
-          <p className="text-sm text-text-secondary leading-relaxed">{result.sample_answer}</p>
+          <h2 className="text-sm font-semibold text-primary mb-3">Band 8-9 Sample Answer</h2>
+          {isFollowUpSession && result.sample_answer.includes('Q:') ? (
+            <div className="space-y-3">
+              {result.sample_answer.split(/\n\nQ:/).map((block, i) => {
+                const text = i === 0 ? block : 'Q:' + block;
+                const qMatch = text.match(/^Q:\s*(.+)/);
+                const aMatch = text.match(/\nA:\s*([\s\S]+)/);
+                if (!qMatch || !aMatch) return (
+                  <p key={i} className="text-sm text-text-secondary leading-relaxed">{text.trim()}</p>
+                );
+                return (
+                  <div key={i} className="bg-white/60 rounded-lg p-3">
+                    <p className="text-xs font-medium text-primary mb-1">{qMatch[1].trim()}</p>
+                    <p className="text-sm text-text-secondary leading-relaxed">{aMatch[1].trim()}</p>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-sm text-text-secondary leading-relaxed">{result.sample_answer}</p>
+          )}
         </div>
       )}
 
