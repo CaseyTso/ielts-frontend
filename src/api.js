@@ -73,44 +73,61 @@ export const api = {
   },
 
   transcribe: async (audioBlob) => {
-    // Try calling the STT API directly from the browser first.
-    // This avoids backend multipart forwarding issues with Go-based API proxies.
-    // Falls back to backend proxy if direct call fails (e.g. CORS).
+    // Call the STT API directly from the browser.
     const cfg = loadConfig();
     if (!cfg.apiKey) {
       return { transcript: '', error: 'AI not configured. Please set your API key in Settings.' };
     }
     const baseUrl = cfg.baseUrl || 'https://yinli.one/v1';
     const sttModel = cfg.modelStt || 'whisper-1';
-    const ext = audioBlob.type === 'audio/wav' ? 'wav' : 'webm';
 
-    // Attempt 1: Direct browser → STT API
     try {
-      const form = new FormData();
-      form.append('file', audioBlob, `recording.${ext}`);
-      form.append('model', sttModel);
-      form.append('language', 'en');
+      // Materialize blob into a contiguous buffer, then build a File.
+      const arrBuf = await audioBlob.arrayBuffer();
+      const bytes = new Uint8Array(arrBuf);
+      const ext = audioBlob.type === 'audio/wav' ? 'wav' : 'webm';
+      const mime = audioBlob.type || (ext === 'wav' ? 'audio/wav' : 'audio/webm');
+      const file = new File([bytes], `recording.${ext}`, { type: mime });
+
+      // Build the multipart body manually to ensure Content-Length is exact.
+      // Some Go reverse-proxies fail with chunked transfer encoding that
+      // browser FormData + fetch may produce.
+      const boundary = '----WebKitFormBoundary' + Math.random().toString(36).slice(2);
+      const encoder = new TextEncoder();
+
+      // Text fields
+      const textParts = [
+        `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${sttModel}\r\n`,
+        `--${boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\nen\r\n`,
+      ];
+      // File part header + footer
+      const fileHeader = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.name}"\r\nContent-Type: ${mime}\r\n\r\n`;
+      const fileFooter = `\r\n--${boundary}--\r\n`;
+
+      // Combine into a single Blob so Content-Length is known upfront
+      const bodyBlob = new Blob([
+        ...textParts.map(t => encoder.encode(t)),
+        encoder.encode(fileHeader),
+        bytes,
+        encoder.encode(fileFooter),
+      ], { type: `multipart/form-data; boundary=${boundary}` });
 
       const res = await fetch(`${baseUrl}/audio/transcriptions`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${cfg.apiKey}` },
-        body: form,
+        headers: {
+          'Authorization': `Bearer ${cfg.apiKey}`,
+          'Content-Type': `multipart/form-data; boundary=${boundary}`,
+          'Content-Length': String(bodyBlob.size),
+        },
+        body: bodyBlob,
       });
       const body = await res.json();
       if (!res.ok) {
         return { transcript: '', error: `Transcription failed (model: ${sttModel}): ${JSON.stringify(body)}` };
       }
       return { transcript: body.text || '' };
-    } catch (directErr) {
-      // Attempt 2: Fall back to backend proxy (CORS or network issue)
-      console.warn('Direct STT call failed, falling back to backend proxy:', directErr.message);
-      try {
-        const form = new FormData();
-        form.append('audio', audioBlob, `recording.${ext}`);
-        return await request('/transcribe', { method: 'POST', body: form });
-      } catch (proxyErr) {
-        return { transcript: '', error: `Transcription failed: ${directErr.message}` };
-      }
+    } catch (e) {
+      return { transcript: '', error: `Transcription failed: ${e.message}` };
     }
   },
 
